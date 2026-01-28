@@ -37,11 +37,27 @@ except Exception as e:
 
 # --- サイドバー：入力 ---
 st.sidebar.header("☕ 今日のペアリングを記録")
-selected_coffee = st.sidebar.selectbox("何を飲んでいますか？", list(COFFEE_DB.keys()))
+
+# 【追加】飲み物の選択肢に「その他」を追加
+coffee_options = list(COFFEE_DB.keys()) + ["その他（自由入力）"]
+selected_coffee_raw = st.sidebar.selectbox("何を飲んでいますか？", coffee_options)
+
+# 【追加】「その他」が選ばれた時だけテキスト入力を表示
+if selected_coffee_raw == "その他（自由入力）":
+    custom_coffee = st.sidebar.text_input("飲み物名を入力してください")
+    selected_coffee = custom_coffee
+else:
+    selected_coffee = selected_coffee_raw
+
 mood = st.sidebar.radio("食べたいボリューム感", ["さっぱり・軽め", "しっかり・濃厚"])
 mood_key = "さっぱり" if mood == "さっぱり・軽め" else "しっかり"
 
-suggestions = COFFEE_DB[selected_coffee]["suggestions"][mood_key]
+# 【修正】DBに存在するコーヒーの場合のみ提案リストを作成
+if selected_coffee in COFFEE_DB:
+    suggestions = COFFEE_DB[selected_coffee]["suggestions"][mood_key]
+else:
+    suggestions = [] # 自由入力の場合は空リスト
+
 chosen_sweet = st.sidebar.selectbox("おすすめから選ぶ", ["選択してください"] + suggestions)
 custom_sweet = st.sidebar.text_input("リストにない場合はこちらに入力")
 final_sweet = custom_sweet if custom_sweet else (chosen_sweet if chosen_sweet != "選択してください" else "")
@@ -51,7 +67,9 @@ comment = st.sidebar.text_area("感想・メモ")
 rating = st.sidebar.slider("今回の相性評価", 1, 5, 3)
 
 if st.sidebar.button("🚀 ペアリングを記録！"):
-    if not final_sweet:
+    if not selected_coffee:
+        st.sidebar.error("飲み物名を入力してください")
+    elif not final_sweet:
         st.sidebar.error("スイーツ名を入力してください")
     else:
         try:
@@ -74,14 +92,11 @@ if st.sidebar.button("🚀 ペアリングを記録！"):
 # --- メイン画面 ---
 st.title("☕ Coffee & Sweets Pairing Master Pro")
 
-# --- タブ機能で画面を整理 ---
 tab1, tab2, tab3 = st.tabs(["💡 ペアリング提案", "📊 傾向分析", "📚 全ログ表示"])
 
 with tab1:
-    # 3. 「今日のおすすめ」提案機能
     st.subheader("🎲 今日は何を合わせる？")
     if not df_history.empty:
-        # 星4つ以上の高評価データからランダムに選ぶ
         high_rated = df_history[df_history['rating'] >= 4]
         if st.button("🌟 過去の高評価ペアから提案を受ける"):
             if not high_rated.empty:
@@ -93,7 +108,7 @@ with tab1:
                         st.image(pick['image_url'], use_container_width=True)
                 with c2:
                     st.success(f"おすすめは **{pick['coffee_type']}** × **{pick['sweet_name']}** です！")
-                    st.write(f"過去の評価: {'⭐' * pick['rating']}")
+                    st.write(f"過去の評価: {'⭐' * int(pick['rating'])}")
                     st.write(f"過去のメモ: {pick['comment']}")
             else:
                 st.warning("星4つ以上の記録がまだありません。まずは記録を増やしましょう！")
@@ -101,41 +116,44 @@ with tab1:
         st.info("データが溜まると、ここでおすすめの提案ができるようになります。")
 
     st.divider()
-    st.info(f"**現在の選択:** {selected_coffee}\n\n{COFFEE_DB[selected_coffee]['reason']}")
-    cols = st.columns(len(suggestions))
-    for i, s in enumerate(suggestions):
-        cols[i].success(f"**{s}**")
+    
+    # 【修正】自由入力された飲み物でもエラーが出ないように条件分岐
+    if selected_coffee in COFFEE_DB:
+        st.info(f"**現在の選択:** {selected_coffee}\n\n{COFFEE_DB[selected_coffee]['reason']}")
+        if suggestions:
+            cols = st.columns(len(suggestions))
+            for i, s in enumerate(suggestions):
+                cols[i].success(f"**{s}**")
+    elif selected_coffee:
+        st.info(f"**現在の選択:** {selected_coffee}\n\n自由な組み合わせで楽しみましょう！記録を残せば分析に反映されます。")
+    else:
+        st.info("左側のサイドバーから飲み物を選んでください。")
 
 with tab2:
-    # 2. 「人気の組み合わせ」ランキング表示
     st.subheader("📈 あなたのペアリング傾向")
     if not df_history.empty:
         col_stat1, col_stat2 = st.columns(2)
-        
         with col_stat1:
             st.write("🏆 **よく飲むコーヒー TOP3**")
             top_coffee = df_history['coffee_type'].value_counts().head(3)
             st.bar_chart(top_coffee)
-        
         with col_stat2:
             st.write("⭐ **平均評価が高いコーヒー**")
             avg_rating = df_history.groupby('coffee_type')['rating'].mean().sort_values(ascending=False)
             st.dataframe(avg_rating.rename("平均評価"))
-        
         st.write("🥐 **よく食べているスイーツ**")
         st.write(", ".join(df_history['sweet_name'].value_counts().head(5).index.tolist()))
     else:
         st.info("分析するデータがまだありません。")
 
 with tab3:
-    # 履歴表示セクション
     st.subheader("📋 履歴一覧")
     if not df_history.empty:
         for index, item in df_history.iterrows():
             date_str = datetime.fromisoformat(item['created_at'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
             col1, col2 = st.columns([0.9, 0.1])
             with col1:
-                with st.expander(f"{date_str} | {item['coffee_type']} × {item['sweet_name']} ({'⭐' * item['rating']})"):
+                with st.expander(f"{date_str} | {item['coffee_type']} × {item['sweet_name']} ({'⭐' * int(item['rating'])})"):
                     if item['image_url']:
                         st.image(item['image_url'], width=300)
                     st.write(f"**ボリューム:** {item['volume']} | **感想:** {item['comment'] if item['comment'] else 'なし'}")
