@@ -1,11 +1,21 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from supabase import create_client, Client
+
+# --- Supabase接続設定 ---
+# StreamlitのSecretsから情報を取得
+try:
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(url, key)
+except Exception:
+    st.error("SupabaseのURLとKeyが設定されていません。Secretsを確認してください。")
+    st.stop()
 
 # --- 設定 ---
-st.set_page_config(page_title="Coffee & Sweets Explorer", layout="wide")
+st.set_page_config(page_title="Coffee & Sweets Explorer (Supabase版)", layout="wide")
 
-# スイーツデータベースを拡充
 COFFEE_DB = {
     "ブラック：浅煎り": {
         "reason": "フルーティーな酸味を引き立てる、フルーツ系や軽やかな甘みが合います。",
@@ -51,10 +61,6 @@ COFFEE_DB = {
     }
 }
 
-# セッション状態の初期化
-if 'history' not in st.session_state:
-    st.session_state.history = []
-
 # --- サイドバー：入力 ---
 st.sidebar.header("☕ コーヒーの選択")
 selected_coffee = st.sidebar.selectbox("何を飲んでいますか？", list(COFFEE_DB.keys()))
@@ -68,27 +74,29 @@ suggestions = COFFEE_DB[selected_coffee]["suggestions"][mood_key]
 chosen_sweet = st.sidebar.selectbox("おすすめから選ぶ", ["選択してください"] + suggestions)
 custom_sweet = st.sidebar.text_input("リストにない場合はこちらに入力")
 
-# 最終的なスイーツ名の決定
 final_sweet = custom_sweet if custom_sweet else (chosen_sweet if chosen_sweet != "選択してください" else "")
-
-# 感想と評価
 comment = st.sidebar.text_area("感想・メモ")
 rating = st.sidebar.slider("今回の相性（星評価）", 1, 5, 3)
 
+# データの保存（Insert）
 if st.sidebar.button("このペアリングを記録！"):
     if final_sweet == "":
         st.sidebar.error("スイーツ名を入力するか選択してください")
     else:
         new_record = {
-            "日付": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "コーヒー": selected_coffee,
-            "スイーツ": final_sweet,
-            "ボリューム": mood,
-            "評価": "⭐" * rating,
-            "感想": comment
+            "coffee_type": selected_coffee,
+            "sweet_name": final_sweet,
+            "volume": mood,
+            "rating": rating,
+            "comment": comment
         }
-        st.session_state.history.insert(0, new_record)
-        st.sidebar.success("ログに保存しました！")
+        # Supabaseへ送信
+        try:
+            supabase.table("coffee_logs").insert(new_record).execute()
+            st.sidebar.success("Supabaseに保存しました！")
+            st.rerun() # 画面を更新して最新データを表示
+        except Exception as e:
+            st.sidebar.error(f"保存に失敗しました: {e}")
 
 # --- メイン画面 ---
 st.title("☕ Coffee & Sweets Pairing Master")
@@ -104,19 +112,40 @@ for i, s in enumerate(suggestions):
 
 st.divider()
 
-# 履歴表示セクション
-st.subheader("📚 あなたのペアリング・ログ")
+# 履歴表示セクション（Select）
+st.subheader("📚 あなたのペアリング・ログ (Supabaseから読み込み)")
 
-if st.session_state.history:
-    df = pd.DataFrame(st.session_state.history)
-    # テーブル表示
-    st.dataframe(df, use_container_width=True)
-    
-    st.markdown("---")
-    # 詳細カード表示
-    for item in st.session_state.history:
-        with st.expander(f"{item['日付']} | {item['コーヒー']} × {item['スイーツ']} ({item['評価']})"):
-            st.write(f"**気分:** {item['ボリューム']}")
-            st.write(f"**感想:** {item['感想'] if item['感想'] else '（未入力）'}")
-else:
-    st.info("まだ記録がありません。コーヒーとスイーツを楽しんだら記録してみましょう！")
+try:
+    # Supabaseから全データを取得（新しい順）
+    response = supabase.table("coffee_logs").select("*").order("created_at", desc=True).execute()
+    history_data = response.data
+
+    if history_data:
+        # 表示用にデータを整形
+        display_df = pd.DataFrame(history_data)
+        # カラム名を日本語に変換して見やすくする
+        display_df = display_df.rename(columns={
+            "created_at": "日付",
+            "coffee_type": "コーヒー",
+            "sweet_name": "スイーツ",
+            "volume": "ボリューム",
+            "rating": "評価",
+            "comment": "感想"
+        })
+        # 評価の数字を星マークに変換
+        display_df["評価"] = display_df["評価"].apply(lambda x: "⭐" * x)
+        
+        # IDなどの不要な列を除外して表示
+        st.dataframe(display_df[["日付", "コーヒー", "スイーツ", "ボリューム", "評価", "感想"]], use_container_width=True)
+        
+        st.markdown("---")
+        # 詳細表示
+        for item in history_data:
+            date_str = datetime.fromisoformat(item['created_at'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
+            with st.expander(f"{date_str} | {item['coffee_type']} × {item['sweet_name']} ({'⭐' * item['rating']})"):
+                st.write(f"**気分:** {item['volume']}")
+                st.write(f"**感想:** {item['comment'] if item['comment'] else '（未入力）'}")
+    else:
+        st.info("まだ記録がありません。")
+except Exception as e:
+    st.error(f"データの読み込みに失敗しました: {e}")
