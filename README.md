@@ -3,7 +3,8 @@
 あなたのコーヒータイムをより豊かに。その日の気分や飲み物に合わせて、最高のスイーツを提案・記録するアプリです。
 
 ## 🚀 試用URL
-[アプリを体験する（https://blank-app-1vm8ek6akiu.streamlit.app/）](https://example.com)
+[アプリを体験する](https://blank-app-1vm8ek6akiu.streamlit.app/)
+
 
 ---
 
