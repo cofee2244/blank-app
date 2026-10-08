@@ -1,18 +1,43 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from supabase import create_client, Client
+import sqlite3
+import os
 import uuid
 import random
 
-# --- Supabase接続設定 ---
-try:
-    url: str = st.secrets["SUPABASE_URL"]
-    key: str = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except Exception:
-    st.error("SupabaseのURLとKeyが設定されていません。Secretsを確認してください。")
-    st.stop()
+# --- SQLite3 データベース接続・初期化 ---
+DB_NAME = "coffee_app.db"
+IMAGE_DIR = "uploaded_images"
+
+# 画像保存用ディレクトリ作成
+if not os.path.exists(IMAGE_DIR):
+    os.makedirs(IMAGE_DIR)
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS coffee_logs (
+            id TEXT PRIMARY KEY,
+            coffee_type TEXT,
+            sweet_name TEXT,
+            volume TEXT,
+            rating INTEGER,
+            comment TEXT,
+            image_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # --- 設定 ---
 st.set_page_config(page_title="Coffee & Sweets Master Pro", layout="wide")
@@ -28,9 +53,9 @@ COFFEE_DB = {
 
 # --- データの取得 ---
 try:
-    response = supabase.table("coffee_logs").select("*").order("created_at", desc=True).execute()
-    history_data = response.data
-    df_history = pd.DataFrame(history_data) if history_data else pd.DataFrame()
+    conn = get_db_connection()
+    df_history = pd.read_sql_query("SELECT * FROM coffee_logs ORDER BY created_at DESC", conn)
+    conn.close()
 except Exception as e:
     st.error(f"データ取得エラー: {e}")
     df_history = pd.DataFrame()
@@ -75,15 +100,25 @@ if st.sidebar.button("🚀 ペアリングを記録！"):
         try:
             image_url = None
             if uploaded_file:
-                file_name = f"{uuid.uuid4()}.{uploaded_file.name.split('.')[-1]}"
-                supabase.storage.from_("sweets_images").upload(file_name, uploaded_file.getvalue())
-                image_url = supabase.storage.from_("sweets_images").get_public_url(file_name)
+                file_ext = uploaded_file.name.split('.')[-1]
+                file_name = f"{uuid.uuid4()}.{file_ext}"
+                file_path = os.path.join(IMAGE_DIR, file_name)
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getvalue())
+                image_url = file_path
 
-            new_record = {
-                "coffee_type": selected_coffee, "sweet_name": final_sweet,
-                "volume": mood, "rating": rating, "comment": comment, "image_url": image_url
-            }
-            supabase.table("coffee_logs").insert(new_record).execute()
+            log_id = str(uuid.uuid4())
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO coffee_logs (id, coffee_type, sweet_name, volume, rating, comment, image_url, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (log_id, selected_coffee, final_sweet, mood, rating, comment, image_url, now_str))
+            conn.commit()
+            conn.close()
+
             st.sidebar.success("記録完了！")
             st.rerun()
         except Exception as e:
@@ -116,7 +151,7 @@ with tab1:
         st.info("データが溜まると、ここでおすすめの提案ができるようになります。")
 
     st.divider()
-    
+
     # 【修正】自由入力された飲み物でもエラーが出ないように条件分岐
     if selected_coffee in COFFEE_DB:
         st.info(f"**現在の選択:** {selected_coffee}\n\n{COFFEE_DB[selected_coffee]['reason']}")
@@ -150,16 +185,30 @@ with tab3:
     st.subheader("📋 履歴一覧")
     if not df_history.empty:
         for index, item in df_history.iterrows():
-            date_str = datetime.fromisoformat(item['created_at'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
+            try:
+                date_str = datetime.strptime(item['created_at'], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                date_str = str(item['created_at'])
             col1, col2 = st.columns([0.9, 0.1])
             with col1:
                 with st.expander(f"{date_str} | {item['coffee_type']} × {item['sweet_name']} ({'⭐' * int(item['rating'])})"):
-                    if item['image_url']:
+                    if item['image_url'] and os.path.exists(item['image_url']):
                         st.image(item['image_url'], width=300)
                     st.write(f"**ボリューム:** {item['volume']} | **感想:** {item['comment'] if item['comment'] else 'なし'}")
             with col2:
                 if st.button("🗑️", key=f"del_{item['id']}"):
-                    supabase.table("coffee_logs").delete().eq("id", item['id']).execute()
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM coffee_logs WHERE id = ?", (item['id'],))
+                    conn.commit()
+                    conn.close()
+                    
+                    # 保存されていた画像ファイルも削除
+                    if item['image_url'] and os.path.exists(item['image_url']):
+                        try:
+                            os.remove(item['image_url'])
+                        except Exception:
+                            pass
                     st.rerun()
     else:
         st.info("ログがありません。")
