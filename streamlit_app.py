@@ -54,7 +54,7 @@ COFFEE_DB = {
 # --- データの取得 ---
 try:
     conn = get_db_connection()
-    df_history = pd.read_sql_query("SELECT * FROM coffee_logs ORDER BY created_at DESC", conn)
+    df_history = pd.read_sql_query("SELECT * FROM coffee_logs ORDER BY rating DESC", conn)
     conn.close()
 except Exception as e:
     st.error(f"データ取得エラー: {e}")
